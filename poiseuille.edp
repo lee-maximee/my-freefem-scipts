@@ -1,0 +1,104 @@
+load "iovtk"
+
+// Mesh
+int n = 100;
+
+real L = 20;
+real R = 5;
+real nu = 1e-1;
+real rho = 1.0;
+real pout = 0.0;
+real Uinlet = 10.0;
+
+int inlet = 1;
+int noslip = 2;
+int outlet = 3;
+border left(t=-R,R){ x = 0; y = -t; label=inlet;}
+border right(t=-R,R){ x = L; y = t; label=outlet;}
+border bot(t=0,L){ x = t; y = -R; label=noslip;}
+border top(t=0,L){ x = L-t; y = R; label=noslip;}
+
+mesh Mh = buildmesh(
+	left(n) + right(n) + top(n) + bot(n)
+);
+
+// variationnal space
+/*
+fespace Vh(Mh, [P2, P2, P1]);
+Vh [u, v, p];
+Vh [du, dv, dp];
+Vh [uh, vh, q];
+*/
+
+fespace VP2(Mh, P2);
+VP2 u,v;
+VP2 uh,vh;
+VP2 du,dv;
+
+fespace VP1(Mh, P1);
+VP1 dp, p,q;
+
+// initialization
+func uIn = Uinlet * (1 - (y/R)^2);
+/*
+u = Uinlet * (1.- (y/R)^2)* (x<=1e-4);
+v = 0;
+p = pout;
+*/
+solve firstGuess(u, v, p, uh, vh, q, solver=sparsesolver) =  
+	int2d(Mh)(
+		//uh * (u*dx(u)+v*dy(u)) 
+		//+ vh * (u*dx(v)+v*dy(v)) 
+		nu * (dx(u)*dx(uh) + dy(u)*dy(uh) + dx(v)*dx(vh) + dy(v)*dy(vh))
+		+ 1/rho * (uh * dx(p) + vh*dy(p))
+		//- 1/rho * p * (dx(uh) + dy(vh))
+		- q * (dx(u) + dy(v))
+	)
+	+ on(inlet, u = uIn, v=0)
+	+ on(noslip, u=0, v=0);
+
+int[int] Order = [1,1];
+savevtk("initial.vtu", Mh, [u, v, 0], p, dataname="U p", order=Order);
+
+// pde
+// Newton loop
+int newtonIter = 30;
+real err;
+for(int i=0; i<newtonIter; i++){
+	//nvs;
+	solve nvs(du, dv, dp, uh, vh, q, solver=sparsesolver) =
+		int2d(Mh)(
+			uh * (u*dx(du)+v*dy(du) + du*dx(u) + dv*dx(u)) 
+			+ vh * (u*dx(dv)+v*dy(dv) + du*dx(v) + dv*dx(v)) 
+			+ nu * (dx(du)*dx(uh) + dy(du)*dy(uh) + dx(dv)*dx(vh) + dy(dv)*dy(vh))
+			+ 1/rho * (uh * dx(dp) + vh*dy(dp))
+			- q * (dx(du) + dy(dv))
+			- 1e-8*dp*q //stabilization term
+		)
+		- int2d(Mh)(
+			uh * (u*dx(u)+v*dy(u)) 
+			+ vh * (u*dx(v)+v*dy(v)) 
+			+ nu * (dx(u)*dx(uh) + dy(u)*dy(uh) + dx(v)*dx(vh) + dy(v)*dy(vh))
+			+ 1/rho * (uh * dx(p) + vh*dy(p))
+			- q * (dx(u) + dy(v))
+		)
+		+ on(outlet, dp=0)
+		+ on(inlet, noslip, du=0, dv=0);
+
+	u[] -= du[];
+	v[] -= dv[];
+	p[] -= dp[];
+
+	err  = du[].linfty/u[].linfty;
+	err += dv[].linfty/v[].linfty;
+	err += dp[].linfty/p[].linfty;
+	
+	cout << "Newton Iteration " << i << endl;
+	cout << "Error " << err << endl;
+
+	if(err<1e-4){
+		cout << "Newton converged" << endl;
+		break;
+	}
+}
+savevtk("results.vtu", Mh, [u,v,0], p, dataname="U p", order=Order);
